@@ -154,11 +154,31 @@ async function downloadCsvs(startDate, endDate) {
       await sleep(500);
 
       // Click "CSV 一括出力" and wait for download
-      const csvButton = page.locator('button:has-text("CSV"), a:has-text("CSV一括出力")').first();
+      // The CSV button on ecforce is a plain text link, not a <button>
+      // Use XPath to find the exact visible text element
+      let csvButton = null;
+      const csvCandidates = await page.locator(':visible:text("CSV")').all();
+      for (const el of csvCandidates) {
+        const text = await el.textContent().catch(() => '');
+        if (text.includes('CSV') && text.includes('一括出力')) {
+          csvButton = el;
+          console.log(`  CSV出力ボタン検出: "${text.trim()}"`);
+          break;
+        }
+      }
 
-      if (await csvButton.count() === 0) {
+      if (!csvButton) {
+        // Fallback: try clicking by exact visible text
+        const fallback = page.locator('text=/CSV.*一括出力/');
+        if (await fallback.count() > 0) {
+          csvButton = fallback.first();
+          console.log('  CSV出力ボタン検出（フォールバック）');
+        }
+      }
+
+      if (!csvButton) {
         console.log(`  警告: CSV出力ボタンが見つかりません（${group.name}）`);
-        await page.screenshot({ path: path.join(config.SCREENSHOT_DIR, `no-csv-button-${group.name}.png`) });
+        await page.screenshot({ path: path.join(config.SCREENSHOT_DIR, `no-csv-button-${group.name}.png`), fullPage: true });
         continue;
       }
 
