@@ -1,0 +1,34 @@
+name: Keep Alive (60-day Disable防止)
+
+# 目的: GitHubはscheduled workflowを60日無活動で自動Disableする。
+# 月1の自動commitで活動を発生させ、daily-report.ymlが止まらないようにする。
+# 2026-05-28事故を踏まえて導入。
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'  # 毎月1日 09:00 JST (00:00 UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Touch keepalive marker
+        run: |
+          mkdir -p .github
+          date -u +'%Y-%m-%dT%H:%M:%SZ' > .github/keepalive.txt
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive.txt
+          if git diff --staged --quiet; then
+            echo "No changes — repository was already touched today"
+          else
+            git commit -m "chore: keepalive $(date -u +%Y-%m-%d)"
+            git push
+          fi
