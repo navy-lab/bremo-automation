@@ -8,6 +8,15 @@ async function main() {
   console.log(`実行日時: ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}`);
 
   try {
+    // Step 0: 当月の月次シートを用意（無ければ前月複製＋基準日セット）
+    // ※importerはec_*基準で月次シート非依存のため、ここが失敗しても取込は止めない
+    console.log('\n■ ステップ0: 月次シートの確認・自動生成');
+    try {
+      await sheets.ensureMonthlySheet();
+    } catch (e) {
+      console.error('月次シート自動生成でエラー（取込は継続します）:', e.message || e);
+    }
+
     // Step 1: Check last data date
     console.log('\n■ ステップ1: 最終データ日の確認');
     const dateRange = await sheets.getLastDataDate();
@@ -48,11 +57,16 @@ async function main() {
     const importResults = await sheets.importAllCsvs(csvFiles);
     console.log('インポート結果:', importResults);
 
-    // Step 4: Verify
+    // Step 4: Verify（参考情報。月次シート依存のため失敗してもエラーにしない）
     console.log('\n■ ステップ4: 検証');
     // Wait a moment for Sheets to recalculate formulas
     await new Promise(r => setTimeout(r, 5000));
-    const verification = await sheets.verify(startDate, endDate);
+    let verification;
+    try {
+      verification = await sheets.verify(startDate, endDate);
+    } catch (e) {
+      verification = `（検証スキップ: ${e.message || e}）`;
+    }
     console.log(`検証結果: ${verification}`);
 
     // Step 5: Notify via Chatwork

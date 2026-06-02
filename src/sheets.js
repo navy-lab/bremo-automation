@@ -17,12 +17,28 @@ function getMonthlySheetName(date) {
   return `${date.getFullYear()}_${date.getMonth() + 1}月`;
 }
 
+// 0-based 列インデックス → A1 列名 (14 -> "O")
+function colLetter(index) {
+  let n = index;
+  let s = '';
+  do {
+    s = String.fromCharCode(65 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return s;
+}
+
 function yesterdayJST() {
   const now = new Date();
-  // Convert to JST
   const jstOffset = 9 * 60 * 60 * 1000;
   const jst = new Date(now.getTime() + jstOffset);
   jst.setUTCDate(jst.getUTCDate() - 1);
+  return new Date(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate());
+}
+
+function todayJST() {
+  const now = new Date();
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   return new Date(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate());
 }
 
@@ -33,7 +49,37 @@ function formatDate(date) {
   return `${y}/${m}/${d}`;
 }
 
-// ===== Check last data date from O column =====
+// ec_* タブ A列の「2026-06-01 00:00:00 - ...」形式から先頭の日付を抽出
+function parseEcDate(s) {
+  if (s === null || s === undefined) return null;
+  const m = String(s).match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+// ===== Determine last imported date from the ec_* destination tabs =====
+// 月次シートに依存せず、自分が書き込む先(ec_*タブ)のA列末尾日付を真実の源とする。
+// これにより月境界・土日でも落ちない（旧実装は当月の月次シートを読みに行き、未作成だと400で全死していた）。
+async function getLastImportedDate(sheets) {
+  const perTabMax = [];
+  for (const group of config.AD_GROUPS) {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: config.SPREADSHEET_ID,
+      range: `'${group.tab}'!A2:A`,
+      valueRenderOption: 'UNFORMATTED_VALUE',
+    }).catch(() => ({ data: { values: [] } }));
+    const dates = (res.data.values || [])
+      .map(r => parseEcDate(r[0]))
+      .filter(Boolean);
+    if (dates.length === 0) { perTabMax.push(null); continue; }
+    perTabMax.push(dates.reduce((a, b) => (b > a ? b : a)));
+  }
+  const nonNull = perTabMax.filter(Boolean);
+  if (nonNull.length === 0) return null; // 全タブ空（初回）
+  // どれか1タブでも遅れている場合に取りこぼさないよう、各タブ最終日の「最小」を採用
+  return nonNull.reduce((a, b) => (b < a ? b : a));
+}
+
 async function getLastDataDate() {
   // Manual override
   if (process.env.START_DATE) {
@@ -44,61 +90,85 @@ async function getLastDataDate() {
 
   const auth = getAuth();
   const sheets = google.sheets({ version: 'v4', auth });
-
   const yd = yesterdayJST();
-  const sheetName = getMonthlySheetName(yd);
-  console.log(`当月シート: ${sheetName}`);
 
-  // Read rows 10-40 (day 1=row10, day 31=row40 based on the sheet structure)
-  // Actually, based on the screenshot: row 9 = header "日", row 10 = 3/1, row 11 = 3/2, etc.
-  // So day N is at row (9 + N)
-  // O column = column 15 = index 14 in 0-based
-  const range = `'${sheetName}'!A10:O40`;
+  const lastImported = await getLastImportedDate(sheets);
 
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: config.SPREADSHEET_ID,
-    range,
-    valueRenderOption: 'UNFORMATTED_VALUE',
-  });
-
-  const rows = res.data.values || [];
-  let lastDataRow = -1;
-
-  // Find the last row where O column (index 14) has a non-zero value
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const row = rows[i];
-    if (row && row.length > config.LP_ACCESS_COL_INDEX) {
-      const lpAccess = row[config.LP_ACCESS_COL_INDEX];
-      if (lpAccess && lpAccess !== 0 && lpAccess !== '' && !isNaN(Number(lpAccess)) && Number(lpAccess) > 0) {
-        lastDataRow = i;
-        break;
-      }
-    }
-  }
-
-  if (lastDataRow === -1) {
-    // No data at all, start from day 1
+  if (!lastImported) {
+    // ec_*タブにデータなし（初回）→ 昨日の属する月の1日から
     const startDate = new Date(yd.getFullYear(), yd.getMonth(), 1);
+    console.log('ec_*タブにデータが無いため月初から取得します');
     return { startDate, endDate: yd };
   }
 
-  // Row index in our data = day of month - 1 (row 0 = day 1)
-  // The B column (index 1) should have the date like "3/25"
-  const lastDataDay = lastDataRow + 1; // day of month
-  const lastDataDate = new Date(yd.getFullYear(), yd.getMonth(), lastDataDay);
-
-  const startDate = new Date(lastDataDate);
+  const startDate = new Date(lastImported);
   startDate.setDate(startDate.getDate() + 1);
   const endDate = yd;
 
-  console.log(`最終データ日: ${lastDataDay}日 (O列にデータあり)`);
+  console.log(`最終取込日(ec_*基準): ${formatDate(lastImported)}`);
   console.log(`取得対象期間: ${formatDate(startDate)} 〜 ${formatDate(endDate)}`);
 
   if (startDate > endDate) {
-    return null; // No data to fetch
+    return null; // 取得不要
   }
 
   return { startDate, endDate };
+}
+
+// ===== 月次シートの自動生成 =====
+// 当月(today JST)の月次シートが無ければ前月シートを複製し、基準日セル(B10既定)を当月1日に設定。
+// 他の日付/曜日はB11=B10+1...の数式で自動更新される（手作業手順を自動化）。
+// importerはec_*基準になったため、本処理が失敗してもデータ取込自体は止まらない（呼び出し側でnon-fatal扱い）。
+async function ensureMonthlySheet() {
+  const auth = getAuth();
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  const today = todayJST();
+  const targetName = getMonthlySheetName(today);
+
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId: config.SPREADSHEET_ID,
+    fields: 'sheets.properties(sheetId,title,index)',
+  });
+  const props = meta.data.sheets.map(s => s.properties);
+
+  if (props.some(p => p.title === targetName)) {
+    console.log(`月次シート ${targetName} は既に存在`);
+    return;
+  }
+
+  const prev = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+  const prevName = getMonthlySheetName(prev);
+  const prevSheet = props.find(p => p.title === prevName);
+  if (!prevSheet) {
+    console.log(`前月シート ${prevName} が見つからないため月次シート自動生成をスキップ`);
+    return;
+  }
+
+  console.log(`月次シート ${targetName} を ${prevName} から自動生成します`);
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: config.SPREADSHEET_ID,
+    requestBody: {
+      requests: [{
+        duplicateSheet: {
+          sourceSheetId: prevSheet.sheetId,
+          insertSheetIndex: prevSheet.index + 1,
+          newSheetName: targetName,
+        },
+      }],
+    },
+  });
+
+  const baseCell = config.MONTH_BASE_DATE_CELL || 'B10';
+  const baseDate = formatDate(new Date(today.getFullYear(), today.getMonth(), 1));
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: config.SPREADSHEET_ID,
+    range: `'${targetName}'!${baseCell}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[baseDate]] },
+  });
+
+  console.log(`月次シート ${targetName} 生成完了（基準日 ${baseCell}=${baseDate}）`);
 }
 
 // ===== Parse CSV (Shift_JIS) =====
@@ -155,23 +225,39 @@ async function importCsvToSheet(csvFile) {
     return 0;
   }
 
-  // Check if the tab already has data
-  const existingData = await sheets.spreadsheets.values.get({
+  // 既存データ（A列の日付）を取得して重複判定に使う
+  const existing = await sheets.spreadsheets.values.get({
     spreadsheetId: config.SPREADSHEET_ID,
-    range: `'${tabName}'!A1:A1`,
+    range: `'${tabName}'!A2:A`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
   }).catch(() => ({ data: { values: [] } }));
 
-  const hasExistingData = existingData.data.values && existingData.data.values.length > 0;
+  const existingRows = existing.data.values || [];
+  const hasExistingData = existingRows.length > 0;
+  const existingDates = new Set(
+    existingRows.map(r => { const d = parseEcDate(r[0]); return d ? formatDate(d) : null; }).filter(Boolean)
+  );
 
-  // Prepare data rows (skip header if sheet already has data)
-  const dataRows = hasExistingData ? rows.slice(1) : rows;
+  // 既存データありならヘッダー行をスキップ
+  let dataRows = hasExistingData ? rows.slice(config.CSV_HEADER_ROWS || 1) : rows;
+
+  // 冪等化: 既にその日付がタブに存在する行は取り込まない（手動再実行での二重取込を防止）
+  if (hasExistingData && existingDates.size > 0) {
+    const before = dataRows.length;
+    dataRows = dataRows.filter(r => {
+      const d = parseEcDate(r[0]);
+      return d ? !existingDates.has(formatDate(d)) : true;
+    });
+    const skipped = before - dataRows.length;
+    if (skipped > 0) console.log(`  既存日付の${skipped}行をスキップ（冪等化）`);
+  }
 
   if (dataRows.length === 0) {
-    console.log(`  データ行なし`);
+    console.log(`  追記対象の新規データなし`);
     return 0;
   }
 
-  // Append to sheet
+  // 末尾に追記
   await sheets.spreadsheets.values.append({
     spreadsheetId: config.SPREADSHEET_ID,
     range: `'${tabName}'!A1`,
@@ -182,7 +268,7 @@ async function importCsvToSheet(csvFile) {
     },
   });
 
-  const rowCount = hasExistingData ? dataRows.length : dataRows.length - 1;
+  const rowCount = hasExistingData ? dataRows.length : dataRows.length - (config.CSV_HEADER_ROWS || 1);
   console.log(`  ${rowCount}行インポート完了`);
   return rowCount;
 }
@@ -199,21 +285,22 @@ async function importAllCsvs(csvFiles) {
   return results;
 }
 
-// ===== Verify by checking O column =====
+// ===== Verify by checking LP access column =====
 async function verify(startDate, endDate) {
   const auth = getAuth();
   const sheets = google.sheets({ version: 'v4', auth });
 
   const sheetName = getMonthlySheetName(endDate);
+  const lpCol = colLetter(config.LP_ACCESS_COL_INDEX);
+  const offset = (config.DAY_ROW_OFFSET != null) ? config.DAY_ROW_OFFSET : 9;
 
-  // Read O column for the date range
-  // Day N = row (9 + N)
+  // day N = 行(OFFSET + N)
   const startDay = startDate.getDate();
   const endDay = endDate.getDate();
-  const startRow = 9 + startDay;
-  const endRow = 9 + endDay;
+  const startRow = offset + startDay;
+  const endRow = offset + endDay;
 
-  const range = `'${sheetName}'!O${startRow}:O${endRow}`;
+  const range = `'${sheetName}'!${lpCol}${startRow}:${lpCol}${endRow}`;
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: config.SPREADSHEET_ID,
@@ -240,4 +327,4 @@ async function verify(startDate, endDate) {
   }
 }
 
-module.exports = { getLastDataDate, importAllCsvs, verify, yesterdayJST, formatDate };
+module.exports = { getLastDataDate, ensureMonthlySheet, importAllCsvs, verify, yesterdayJST, formatDate };

@@ -21,4 +21,8 @@ module.exports = {
   SCREENSHOT_DIR: path.join(__dirname, '..', 'screenshots'),
   LP_ACCESS_COL_INDEX: 14, // O column (0-based in values array)
   CSV_DATE_COL_INDEX: 1,   // B column in CSV
+  // 月次シート: row9=ヘッダー, 1日=行10。verify用オフセット。
+  DAY_ROW_OFFSET: 9,
+  // 月次シート自動生成時に当月1日をセットする基準日セル(B10=直接値, B11=B10+1...)。
+  MONTH_BASE_DATE_CELL: 'B10',
 };
