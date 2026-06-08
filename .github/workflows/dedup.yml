@@ -1,0 +1,26 @@
+name: Dedup ec_* rows (one-shot)
+
+# 2026-06の二重取込で入った ec_* タブの重複行を1回だけ掃除するための使い捨てworkflow。
+# 手動実行(workflow_dispatch)専用。実行・確認後に dedup.yml / src/dedup.js は削除してよい。
+
+on:
+  workflow_dispatch:
+
+env:
+  GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+jobs:
+  dedup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run dedup
+        run: node src/dedup.js
