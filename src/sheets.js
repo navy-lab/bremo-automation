@@ -49,27 +49,29 @@ function formatDate(date) {
   return `${y}/${m}/${d}`;
 }
 
-// ec_* タブ A列の「2026-06-01 00:00:00 - ...」形式から先頭の日付を抽出
+// ec_* タブの日付セルから YYYY-MM-DD を抽出。
+// A列(集計期間 "2026-06-04 ... - 2026-06-05 ...")でもB列(実日付 "2026/06/05")でも拾えるよう
+// ハイフン/スラッシュ両対応。判定はB列(実日付)で行う運用に変更したため両形式を許容する(2026-06)。
 function parseEcDate(s) {
   if (s === null || s === undefined) return null;
-  const m = String(s).match(/(\d{4})-(\d{2})-(\d{2})/);
+  const m = String(s).match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
   if (!m) return null;
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
 }
 
 // ===== Determine last imported date from the ec_* destination tabs =====
-// 月次シートに依存せず、自分が書き込む先(ec_*タブ)のA列末尾日付を真実の源とする。
-// これにより月境界・土日でも落ちない（旧実装は当月の月次シートを読みに行き、未作成だと400で全死していた）。
+// 月次シートに依存せず、自分が書き込む先(ec_*タブ)の最終日付を真実の源とする。
+// 判定はB列(実日付)で行う。A列はecforceの「集計期間」文字列で、複数日まとめ取得時に
+// 「開始日」しか拾えず最終取込日を誤認→境界日の二重取込を招いていたため(2026-06修正)。
 async function getLastImportedDate(sheets) {
   const perTabMax = [];
   for (const group of config.AD_GROUPS) {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: config.SPREADSHEET_ID,
-      range: `'${group.tab}'!A2:A`,
-      valueRenderOption: 'UNFORMATTED_VALUE',
+      range: `'${group.tab}'!A2:B`,
     }).catch(() => ({ data: { values: [] } }));
     const dates = (res.data.values || [])
-      .map(r => parseEcDate(r[0]))
+      .map(r => parseEcDate(r[config.CSV_DATE_COL_INDEX]))
       .filter(Boolean);
     if (dates.length === 0) { perTabMax.push(null); continue; }
     perTabMax.push(dates.reduce((a, b) => (b > a ? b : a)));
@@ -225,17 +227,17 @@ async function importCsvToSheet(csvFile) {
     return 0;
   }
 
-  // 既存データ（A列の日付）を取得して重複判定に使う
+  // 既存データ（B列=実日付）を取得して重複判定に使う。
+  // A列(集計期間)ではなくB列(実日付)で判定する点が重要（2026-06の二重取込修正）。
   const existing = await sheets.spreadsheets.values.get({
     spreadsheetId: config.SPREADSHEET_ID,
-    range: `'${tabName}'!A2:A`,
-    valueRenderOption: 'UNFORMATTED_VALUE',
+    range: `'${tabName}'!A2:B`,
   }).catch(() => ({ data: { values: [] } }));
 
   const existingRows = existing.data.values || [];
   const hasExistingData = existingRows.length > 0;
   const existingDates = new Set(
-    existingRows.map(r => { const d = parseEcDate(r[0]); return d ? formatDate(d) : null; }).filter(Boolean)
+    existingRows.map(r => { const d = parseEcDate(r[config.CSV_DATE_COL_INDEX]); return d ? formatDate(d) : null; }).filter(Boolean)
   );
 
   // 既存データありならヘッダー行をスキップ
@@ -245,7 +247,7 @@ async function importCsvToSheet(csvFile) {
   if (hasExistingData && existingDates.size > 0) {
     const before = dataRows.length;
     dataRows = dataRows.filter(r => {
-      const d = parseEcDate(r[0]);
+      const d = parseEcDate(r[config.CSV_DATE_COL_INDEX]);
       return d ? !existingDates.has(formatDate(d)) : true;
     });
     const skipped = before - dataRows.length;
