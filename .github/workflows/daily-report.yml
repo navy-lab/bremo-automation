@@ -2,8 +2,12 @@ name: Bremo Daily Report Auto Update
 
 on:
   schedule:
-    # 毎朝 07:00 JST = 22:00 UTC (前日)
+    # 毎朝 07:00 JST = 22:00 UTC (前日) — プライマリ
     - cron: '0 22 * * *'
+    # リカバリ枠: ecforce(ca-now.jp)の朝方不応答で失敗した日を自動再取込
+    # (取込済みの日はno-opで通知も出ない。importerはB列実日付で冪等)
+    - cron: '30 1 * * *'  # 10:30 JST
+    - cron: '0 5 * * *'   # 14:00 JST
   workflow_dispatch:
     inputs:
       start_date:
@@ -21,11 +25,15 @@ env:
   CHATWORK_ROOM_ID: ${{ secrets.CHATWORK_ROOM_ID }}
   START_DATE: ${{ github.event.inputs.start_date }}
   END_DATE: ${{ github.event.inputs.end_date }}
+  # どのcron枠で起動したか(リカバリ枠の通知抑制に使用。手動実行時は空)
+  TRIGGER_SCHEDULE: ${{ github.event.schedule }}
+  # 2026-06-16からGitHub ActionsはNode24が強制される。先行オプトインで事前検証済みにする
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   daily-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20  # ログインリトライ(最大3回×90秒待ち)分の余裕
 
     steps:
       - name: Checkout

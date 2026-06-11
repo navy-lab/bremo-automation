@@ -23,6 +23,13 @@ async function main() {
 
     if (!dateRange) {
       console.log('取得すべきデータなし（昨日分まで反映済み）');
+      // リカバリ枠cron(朝07:00以外)では「取込済み」が正常状態なので通知しない
+      // （毎日「取得不要」通知が2通飛ぶノイズを防止。TRIGGER_SCHEDULEはworkflowのgithub.event.schedule）
+      const sched = process.env.TRIGGER_SCHEDULE || '';
+      if (sched && sched !== '0 22 * * *') {
+        console.log(`リカバリ枠(cron: ${sched})のため通知はスキップ`);
+        return;
+      }
       await chatwork.notifyNoData();
       return;
     }
