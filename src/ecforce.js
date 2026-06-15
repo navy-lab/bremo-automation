@@ -39,14 +39,31 @@ function sleep(ms) {
 // (2026-06-04 / 06-05 / 06-11 に発生)。networkidle待ちは非致命化し、
 // フォーム出現は waitFor で明示的に待つ。
 async function login(page) {
-  await page.goto(`${config.ECFORCE.BASE_URL}/advertisers/sign_in`, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
-
   // Fill login form
   const emailInput = page.locator('input[type="email"], input[name*="email"], #advertiser_email').first();
   const passwordInput = page.locator('input[type="password"], input[name*="password"], #advertiser_password').first();
 
-  await emailInput.waitFor({ state: 'visible', timeout: 45000 });
+  // ca-now.jp は朝方、ログインフォームを返さない（メンテ/エラー/未完成HTMLを返す）ことが間欠的にある。
+  // 旧実装は goto 1回＋45秒待ちのみで、フォーム不在ページが返ると45秒空費して即失敗していた。
+  // 1試行の中でも goto→フォーム出現待ちを最大3回リロードして粘り、短時間の不応答を吸収する。
+  let formReady = false;
+  for (let pass = 1; pass <= 3 && !formReady; pass++) {
+    try {
+      await page.goto(`${config.ECFORCE.BASE_URL}/advertisers/sign_in`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await emailInput.waitFor({ state: 'visible', timeout: 20000 });
+      formReady = true;
+    } catch (e) {
+      const head = (e.message || String(e)).split('\n')[0];
+      console.error(`  ログインフォーム未出現 (リロード ${pass}/3): ${head}`);
+      if (pass < 3) await sleep(5000);
+    }
+  }
+  if (!formReady) {
+    await page.screenshot({ path: path.join(config.SCREENSHOT_DIR, 'login-form-not-found.png'), fullPage: true }).catch(() => {});
+    throw new Error('LOGIN_FORM_NOT_FOUND');
+  }
+
   await emailInput.fill(config.ECFORCE.EMAIL);
   await passwordInput.fill(config.ECFORCE.PASSWORD);
 
@@ -81,7 +98,7 @@ async function login(page) {
 // ecforce側の一時不応答(タイムアウト等)はリトライで吸収する。
 // 2FA要求はリトライしても解消しないため即座に投げ直す。
 // 各試行の失敗時はスクショを保存し、失敗Runのartifactとして残す。
-async function loginWithRetry(page, attempts = 3, waitMs = 90000) {
+async function loginWithRetry(page, attempts = 2, waitMs = 75000) {
   for (let i = 1; i <= attempts; i++) {
     try {
       console.log(`ecforceにログイン中... (試行 ${i}/${attempts})`);
@@ -92,7 +109,12 @@ async function loginWithRetry(page, attempts = 3, waitMs = 90000) {
       const headline = e.message ? e.message.split('\n')[0] : String(e);
       console.error(`ログイン試行 ${i}/${attempts} 失敗: ${headline}`);
       await page.screenshot({ path: path.join(config.SCREENSHOT_DIR, `login-attempt-${i}-failed.png`), fullPage: true }).catch(() => {});
-      if (i === attempts) throw e;
+      if (i === attempts) {
+        // 全試行を使い切ってのログイン不能 = ca-now.jp側の不応答とみなし、呼び出し側(index.js)で
+        // 「スロットに応じた通知抑制」の対象にできるようフラグを立てる。
+        e.isEcforceUnreachable = true;
+        throw e;
+      }
       console.log(`${waitMs / 1000}秒待機して再試行します（ecforce側の一時不応答対策）`);
       await sleep(waitMs);
     }

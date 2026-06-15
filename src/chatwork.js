@@ -59,6 +59,7 @@ module.exports = {
       ...result.imported.map(r => `  ${r}`),
       '',
       `■ 検証: ${result.verification}`,
+      ...(result.isRecovery ? ['', '※ リカバリ枠での取得です（朝の自動取得が遅延/失敗したため自動補完。対応不要）。'] : []),
       '',
       `実行時刻: ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}`,
       '[/info]',
@@ -66,16 +67,25 @@ module.exports = {
     return sendMessage(msg);
   },
 
-  async notifyError(error) {
-    const msg = [
+  async notifyError(error, ctx = {}) {
+    const { daysBehind, isFinalSlot, criticalStale } = ctx;
+    const lines = [
       '[info][title]【ブレモデイレポ】エラー発生[/title]',
       `エラー: ${error.message || error}`,
+      '',
+    ];
+    if (criticalStale) {
+      lines.push(`⚠ 未取込が ${daysBehind} 日分累積しています。早めにご確認ください。`);
+    } else if (isFinalSlot) {
+      lines.push('本日の最終リカバリ枠でも取得できませんでした（朝〜午後を通して失敗）。');
+    }
+    lines.push(
       '',
       `発生時刻: ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}`,
       'GitHub Actionsのログを確認してください。',
       '[/info]',
-    ].join('\n');
-    return sendMessage(msg);
+    );
+    return sendMessage(lines.join('\n'));
   },
 
   async notifyNoData() {
