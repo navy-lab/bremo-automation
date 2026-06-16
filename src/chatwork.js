@@ -68,16 +68,21 @@ module.exports = {
   },
 
   async notifyError(error, ctx = {}) {
-    const { daysBehind, isFinalSlot, criticalStale } = ctx;
+    const { daysBehind, isWatchdog, isFinalSlot, criticalStale } = ctx;
+    // watchdog(10時)だけの遅延は「自動再取得中のお知らせ」、最終枠失敗/累積は「エラー」として出し分け
+    const headsUpOnly = isWatchdog && !isFinalSlot && !criticalStale;
+    const title = headsUpOnly ? '取込み遅延のお知らせ' : 'エラー発生';
     const lines = [
-      '[info][title]【ブレモデイレポ】エラー発生[/title]',
+      `[info][title]【ブレモデイレポ】${title}[/title]`,
       `エラー: ${error.message || error}`,
       '',
     ];
     if (criticalStale) {
       lines.push(`⚠ 未取込が ${daysBehind} 日分累積しています。早めにご確認ください。`);
     } else if (isFinalSlot) {
-      lines.push('本日の最終リカバリ枠でも取得できませんでした（朝〜午後を通して失敗）。');
+      lines.push('本日の最終リカバリ枠(14時)でも取得できませんでした（朝〜午後を通して失敗）。手動での再実行をご検討ください。');
+    } else if (isWatchdog) {
+      lines.push('10時時点でまだ前日分を取込めていません（ca-now.jpの朝の不応答が継続している可能性）。14時の最終枠で自動再取得を試みます。念のためのお知らせです。');
     }
     lines.push(
       '',

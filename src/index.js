@@ -29,7 +29,7 @@ async function main() {
       // リカバリ枠cron(朝07:00以外)では「取込済み」が正常状態なので通知しない
       // （毎日「取得不要」通知が2通飛ぶノイズを防止。TRIGGER_SCHEDULEはworkflowのgithub.event.schedule）
       const sched = process.env.TRIGGER_SCHEDULE || '';
-      if (sched && sched !== '0 22 * * *') {
+      if (sched && sched !== config.SCHEDULES.PRIMARY) {
         console.log(`リカバリ枠(cron: ${sched})のため通知はスキップ`);
         return;
       }
@@ -89,8 +89,8 @@ async function main() {
       period: periodStr,
       imported: importResults,
       verification,
-      // プライマリ(07:00)以外で実データを取得した = 朝の取得が遅延/失敗しリカバリ枠で補完したケース
-      isRecovery: trigSched !== '' && trigSched !== '0 22 * * *',
+      // プライマリ以外で実データを取得した = 朝の取得が遅延/失敗しリカバリ枠で補完したケース
+      isRecovery: trigSched !== '' && trigSched !== config.SCHEDULES.PRIMARY,
     });
 
     console.log('\n===== 完了 =====');
@@ -102,24 +102,27 @@ async function main() {
     // 通知エスカレーション:
     // ca-now.jp の朝方不応答は後続のリカバリ枠(cron)で自動的に取り戻せるため、
     // プライマリ/早朝リカバリ枠での失敗は「想定内・自己回復見込み」として通知を抑制する。
-    // 本当に人手対応が要るのは「当日最終枠(14:00)でも失敗」か「取りこぼしが2日分以上累積」のときだけ。
+    // 本当に人手対応が要るのは「10時watchdog/14時最終枠でも失敗」か「取りこぼしが2日分以上累積」のとき。
     const sched = process.env.TRIGGER_SCHEDULE || '';
-    const FINAL_SLOT = '0 5 * * *';   // 14:00 JST = 当日の最終リカバリ枠
     const isManual = sched === '';
-    const isFinalSlot = sched === FINAL_SLOT;
+    const isWatchdog = sched === config.SCHEDULES.WATCHDOG; // 10:03 JST: ここで未取込なら1通だけ警報
+    const isFinalSlot = sched === config.SCHEDULES.FINAL;   // 14:07 JST: 当日最終枠
     // 取得対象が2日分以上 = 過去の取りこぼしが累積している → スロットに関係なく警報
     let daysBehind = 1;
     if (fetchRange && fetchRange.startDate && fetchRange.endDate) {
       daysBehind = Math.round((fetchRange.endDate - fetchRange.startDate) / 86400000) + 1;
     }
     const criticalStale = daysBehind >= 2;
-    // ca-now.jp由来の一時的失敗(ログイン不能/CSV取得不可)のみスロット抑制の対象。
-    // それ以外の想定外エラー(Sheets権限/設定変更等)はスロットに関係なく即警報する。
+    // ca-now.jp由来の一時的失敗(ログイン不能/CSV取得不可)は後続枠での自己回復を見込み、
+    // プライマリ/早朝リカバリ枠では通知を抑制する。人手確認が要るのは次のときだけ:
+    //   ・10:03 watchdog枠でもまだ取れない（朝が回復していない＝沈黙放置を防ぐ1通の安全網）
+    //   ・14:07 最終枠でも取れない（朝〜午後を通して失敗）
+    //   ・取りこぼしが2日分以上累積 / 手動実行 / 想定外エラー(Sheets権限等)
     const isTransient = !!(error && error.isEcforceUnreachable);
-    const shouldAlert = !isTransient || isManual || isFinalSlot || criticalStale;
+    const shouldAlert = !isTransient || isManual || isWatchdog || isFinalSlot || criticalStale;
 
     if (shouldAlert) {
-      await chatwork.notifyError(error, { daysBehind, isFinalSlot, criticalStale })
+      await chatwork.notifyError(error, { daysBehind, isWatchdog, isFinalSlot, criticalStale })
         .catch(e => console.error('Chatwork通知も失敗:', e));
     } else {
       console.log(`[通知抑制] ${sched || '手動'}枠での失敗。後続のリカバリ枠で自動再取得します（未取込 ${daysBehind} 日分のため非警報）。`);

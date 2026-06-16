@@ -2,14 +2,14 @@ name: Bremo Daily Report Auto Update
 
 on:
   schedule:
-    # 毎朝 07:00 JST = 22:00 UTC (前日) — プライマリ
-    - cron: '0 22 * * *'
-    # リカバリ枠: ecforce(ca-now.jp)の朝方不応答で失敗した日を自動再取込
-    # (取込済みの日はno-opで通知も出ない。importerはB列実日付で冪等)
-    # 9:00枠は木曜9-10時の週報マスタ転記GASに失敗日でも間に合わせるための先行リトライ
-    - cron: '0 0 * * *'   # 09:00 JST
-    - cron: '30 1 * * *'  # 10:30 JST
-    - cron: '0 5 * * *'   # 14:00 JST
+    # ※ これらの cron 文字列は src/config.js の SCHEDULES と必ず一致させること
+    #   （通知ロジックが github.event.schedule の文字列で「どの枠か」を判定するため）。
+    #   混雑する :00/:30 はGitHub側のスケジュール遅延が大きいので、半端な分にして遅延を抑える。
+    - cron: '47 21 * * *'   # 06:47 JST プライマリ（ca-now.jpの朝の不応答窓 7:30-8:30 の手前で取得を狙う）
+    # リカバリ/監視枠: 朝の不応答で失敗した日を自動再取込（取込済みならno-op・無通知。importerはB列実日付で冪等）
+    - cron: '53 23 * * *'   # 08:53 JST リカバリ（木曜の週報マスタ転記 9-10時 の手前）
+    - cron: '3 1 * * *'     # 10:03 JST watchdog（ここで未取込なら「1通だけ」警報して沈黙放置を防ぐ）
+    - cron: '7 5 * * *'     # 14:07 JST 最終枠（ここでも失敗なら警報）
   workflow_dispatch:
     inputs:
       start_date:
@@ -32,10 +32,17 @@ env:
   # 2026-06-16からGitHub ActionsはNode24が強制される。先行オプトインで事前検証済みにする
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
+# 同一workflowのRunを直列化する。プライマリが朝の不応答で最大18分粘っている最中に
+# 後続のリカバリ枠が起動すると、二重ログイン・二重書込み（過去の二重取込バグの温床）に
+# なりうるため、進行中のRunが終わるまで後続をキューイングする（進行中はキャンセルしない）。
+concurrency:
+  group: bremo-daily-report
+  cancel-in-progress: false
+
 jobs:
   daily-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 20  # ログインリトライ(最大3回×90秒待ち)分の余裕
+    timeout-minutes: 30  # ログイン時間予算(最大18分)＋セットアップ/CSV取得/書込みの余裕
 
     steps:
       - name: Checkout

@@ -94,28 +94,39 @@ async function login(page) {
   console.log('ログイン成功');
 }
 
-// ===== Login with retry =====
-// ecforce側の一時不応答(タイムアウト等)はリトライで吸収する。
-// 2FA要求はリトライしても解消しないため即座に投げ直す。
-// 各試行の失敗時はスクショを保存し、失敗Runのartifactとして残す。
-async function loginWithRetry(page, attempts = 2, waitMs = 75000) {
-  for (let i = 1; i <= attempts; i++) {
+// ===== Login with retry（時間予算ベース）=====
+// ca-now.jp は朝7:30-8:30台にログインフォームを数分間返さないことが間欠的にある
+// (2026-06-04/05/11/15/16 に発生。6/16は08:29-08:33の約4.5分間ずっと不応答だった)。
+// 旧実装は「2試行・合計約4.5分」で見切っており、不応答が"継続している最中"に諦めて失敗していた。
+// → 単一Runが朝の不応答を"待ち切れる"よう、最大18分の時間予算で粘る（GitHubのcron遅延で
+//   不応答窓に着弾しても、窓が空くまで再試行し続けて同一Run内で取り戻す）。
+// 2FA要求はリトライで解消しないため即座に投げ直す。各試行の失敗時はスクショをartifactに残す。
+async function loginWithRetry(page, { maxMs = 18 * 60 * 1000, waitMs = 60000 } = {}) {
+  const start = Date.now();
+  let attempt = 0;
+  let lastErr;
+  while (true) {
+    attempt++;
+    const elapsed = () => Math.round((Date.now() - start) / 1000);
     try {
-      console.log(`ecforceにログイン中... (試行 ${i}/${attempts})`);
+      console.log(`ecforceにログイン中... (試行 ${attempt}, 経過 ${elapsed()}s / 予算 ${Math.round(maxMs / 1000)}s)`);
       await login(page);
       return;
     } catch (e) {
       if (e.message === '2FA_REQUIRED') throw e;
+      lastErr = e;
       const headline = e.message ? e.message.split('\n')[0] : String(e);
-      console.error(`ログイン試行 ${i}/${attempts} 失敗: ${headline}`);
-      await page.screenshot({ path: path.join(config.SCREENSHOT_DIR, `login-attempt-${i}-failed.png`), fullPage: true }).catch(() => {});
-      if (i === attempts) {
-        // 全試行を使い切ってのログイン不能 = ca-now.jp側の不応答とみなし、呼び出し側(index.js)で
-        // 「スロットに応じた通知抑制」の対象にできるようフラグを立てる。
-        e.isEcforceUnreachable = true;
-        throw e;
+      console.error(`ログイン試行 ${attempt} 失敗 (経過 ${elapsed()}s): ${headline}`);
+      await page.screenshot({ path: path.join(config.SCREENSHOT_DIR, `login-attempt-${attempt}-failed.png`), fullPage: true }).catch(() => {});
+      // 次の待機を挟むと予算を超えるなら、これ以上粘らず終了する
+      if (Date.now() - start + waitMs >= maxMs) {
+        // 時間予算を使い切ってのログイン不能 = ca-now.jp側の"継続的な"不応答とみなし、
+        // 呼び出し側(index.js)で「スロットに応じた通知抑制」の対象にできるようフラグを立てる。
+        lastErr.isEcforceUnreachable = true;
+        console.error(`ログイン時間予算(${Math.round(maxMs / 1000)}s)を使い切りました。ca-now.jpの不応答が継続している可能性が高いです。`);
+        throw lastErr;
       }
-      console.log(`${waitMs / 1000}秒待機して再試行します（ecforce側の一時不応答対策）`);
+      console.log(`${waitMs / 1000}秒待機して再試行します（ecforce側の朝の不応答を待ち切る）`);
       await sleep(waitMs);
     }
   }
