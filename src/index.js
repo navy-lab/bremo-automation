@@ -124,10 +124,15 @@ async function main() {
     if (shouldAlert) {
       await chatwork.notifyError(error, { daysBehind, isWatchdog, isFinalSlot, criticalStale })
         .catch(e => console.error('Chatwork通知も失敗:', e));
+      process.exit(1);
     } else {
       console.log(`[通知抑制] ${sched || '手動'}枠での失敗。後続のリカバリ枠で自動再取得します（未取込 ${daysBehind} 日分のため非警報）。`);
+      // ジョブも失敗させない(exit 0)。Chatworkは抑制してもジョブがfailだとGitHubの
+      // "Run failed" メールが毎朝飛び、自己回復する一時不応答が本物の障害と区別できなくなるため。
+      // 未取込のままなら 10:03 watchdog / 14:07 最終枠が exit 1 + Chatwork警報で必ず顕在化する。
+      console.log(`::warning::ecforce一時不応答のためこの枠はスキップ（後続リカバリ枠で自動再取得・未取込${daysBehind}日分）`);
+      process.exit(0);
     }
-    process.exit(1);
   }
 }
 
