@@ -18,6 +18,9 @@ on:
       end_date:
         description: '終了日 (YYYY-MM-DD) 空欄=昨日'
         required: false
+      slot:
+        description: '起動枠（Cloudflare Worker dairepo-cron-trigger が SCHEDULES の文字列を渡す）。手動実行は空欄'
+        required: false
 
 env:
   ECFORCE_EMAIL: ${{ secrets.ECFORCE_EMAIL }}
@@ -27,8 +30,10 @@ env:
   CHATWORK_ROOM_ID: ${{ secrets.CHATWORK_ROOM_ID }}
   START_DATE: ${{ github.event.inputs.start_date }}
   END_DATE: ${{ github.event.inputs.end_date }}
-  # どのcron枠で起動したか(リカバリ枠の通知抑制に使用。手動実行時は空)
-  TRIGGER_SCHEDULE: ${{ github.event.schedule }}
+  # どの枠で起動したか(リカバリ枠の通知抑制に使用。手動実行時は空)。
+  # GitHubのscheduleは数時間遅れるため、定刻の起動は Cloudflare Worker(dairepo-cron-trigger) が
+  # workflow_dispatch で slot に SCHEDULES の文字列を入れて行う。schedule は Worker が止まった時の予備。
+  TRIGGER_SCHEDULE: ${{ github.event.schedule || github.event.inputs.slot }}
   # 2026-06-16からGitHub ActionsはNode24が強制される。先行オプトインで事前検証済みにする
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
